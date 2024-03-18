@@ -79,6 +79,14 @@ mod lottery {
 
         let lottery = &mut ctx.accounts.lottery;
 
+        if lottery.winner_id.is_some() {
+            return err!(LotteryError:: WinnerAlreadyExists);
+        }
+
+        if lottery.last_ticket_id == 0 {
+            return err!(LotteryError:: NoTickets); 
+        }
+
         // Pick a pseudo random winner
         let clock = Clock::get()?;
         let pseudo_random_number = ((u64::from_le_bytes(
@@ -91,6 +99,47 @@ mod lottery {
         lottery.winner_id = Some(winner_id);
 
         msg!("Winner id:{}", winner_id);
+        Ok(())
+    }
+
+    pub fn claim_prize(ctx: Context<ClaimPrize>, lottery_id: u32, ticket_id: u32) -> Result<()> {
+
+        let lottery = &mut ctx.accounts.lottery;
+        let ticket = & ctx.accounts.ticket;
+        let winner = &ctx.accounts.authority;
+
+        if lottery.claimed {
+            return err!(LotteryError:: AlreadyClaimed);
+        }
+
+        // Validate winner id
+        match lottery.winner_id {
+            Some(winner_id) => {
+                if winner_id != ticket.id {
+                    return err!(LotteryError:: InvalidWinner)
+                }
+            }
+            None => return err!(LotteryError:: WinnerNotChosen)
+        }
+
+        // Transfer the prize from lottery PDA to winner
+        let prize = lottery
+        .ticket_price
+        .checked_mul(lottery.last_ticket_id.into())
+        .unwrap();
+
+        **lottery.to_account_info().try_borrow_mut_lamports()? -= prize;
+        **winner.to_account_info().try_borrow_mut_lamports()? += prize;
+
+        lottery.claimed = true;
+
+        msg!(
+            "{} claimed {} lamports from lottery id {} with ticket id {}",
+            winner.key(),
+            prize,
+            lottery.id,
+            ticket.id,
+        );
         Ok(())
     }
 }                                           
@@ -204,4 +253,32 @@ pub struct PickWinner<'info> {
     pub lottery: Account<'info, Lottery>,
 
     pub authority: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(lottery_id: u32, ticket_id: u32)]
+pub struct ClaimPrize<'info> {
+    #[account(
+        mut,
+        seeds = [LOTTERY_SEED.as_bytes(), &lottery_id.to_le_bytes()],
+        bump,
+    )]
+    pub lottery: Account<'info, Lottery>,
+
+    #[account(
+        seeds = [
+            TICKET_SEED.as_bytes(),
+            lottery.key().as_ref(),
+            &(ticket_id).to_le_bytes(),
+        ],
+        bump,
+        has_one = authority,
+    )]
+    pub ticket: Account<'info, Ticket>,
+
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    pub system_program: Program<'info, System>,
+
 }
